@@ -1,5 +1,8 @@
 import argparse
+import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from pdfsum import db
@@ -92,6 +95,36 @@ def cmd_publish_dataset(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_summarize(args: argparse.Namespace) -> int:
+    pdf_path = Path(args.pdf_path)
+    if not pdf_path.exists():
+        print(f"error: no such file: {pdf_path}", file=sys.stderr)
+        return 1
+
+    extracted = extract_text(pdf_path)
+    body = json.dumps({"text": extracted.text, "max_tokens": args.max_tokens}).encode("utf-8")
+    request = urllib.request.Request(
+        args.endpoint.rstrip("/") + "/summarize",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=args.timeout) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        print(
+            f"error: could not reach inference endpoint {args.endpoint}: {e}\n"
+            "MANUAL_ACTION_REQUIRED: open training/serve_inference.ipynb on Kaggle/Colab "
+            "and pass the tunnel URL it prints via --endpoint.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(payload["output"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pdfsum")
     parser.add_argument(
@@ -122,6 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pub_parser.add_argument("--repo-id", default=publish.DEFAULT_REPO_ID)
     pub_parser.set_defaults(func=cmd_publish_dataset)
+
+    sum_parser = subparsers.add_parser(
+        "summarize", help="summarize a PDF via a running inference endpoint (see training/serve_inference.ipynb)"
+    )
+    sum_parser.add_argument("pdf_path")
+    sum_parser.add_argument("--endpoint", required=True, help="tunnel URL printed by serve_inference.ipynb")
+    sum_parser.add_argument("--max-tokens", type=int, default=512)
+    sum_parser.add_argument("--timeout", type=float, default=120.0)
+    sum_parser.set_defaults(func=cmd_summarize)
 
     return parser
 
