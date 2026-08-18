@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from pdfsum import db
-from pdfsum.dataset import generate, teacher
+from pdfsum.dataset import generate, publish, teacher
 from pdfsum.dataset.sources import fetch_arxiv_papers, fetch_gutenberg_books, fetch_sec_contracts, fetch_sec_reports
 from pdfsum.extract import extract_text
 
@@ -78,6 +78,20 @@ def cmd_generate_dataset(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish_dataset(args: argparse.Namespace) -> int:
+    dataset_path = Path(args.dataset_path)
+    if not dataset_path.exists():
+        print(f"error: no such file: {dataset_path}", file=sys.stderr)
+        return 1
+    try:
+        url = publish.upload_file(dataset_path, "examples.jsonl", repo_id=args.repo_id)
+    except publish.MissingHfTokenError as e:
+        print(f"stopped: {e}", file=sys.stderr)
+        return 1
+    print(f"published: {url}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pdfsum")
     parser.add_argument(
@@ -99,6 +113,15 @@ def build_parser() -> argparse.ArgumentParser:
     gen_parser.add_argument("--count", type=int, default=1)
     gen_parser.add_argument("--model", default=teacher.FREE_MODELS[0], choices=teacher.FREE_MODELS)
     gen_parser.set_defaults(func=cmd_generate_dataset)
+
+    pub_parser = subparsers.add_parser(
+        "publish-dataset", help="push the local dataset JSONL to the private HF dataset repo"
+    )
+    pub_parser.add_argument(
+        "--dataset-path", default=str(generate.DEFAULT_OUTPUT_PATH)
+    )
+    pub_parser.add_argument("--repo-id", default=publish.DEFAULT_REPO_ID)
+    pub_parser.set_defaults(func=cmd_publish_dataset)
 
     return parser
 
