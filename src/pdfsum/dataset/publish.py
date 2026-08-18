@@ -7,7 +7,7 @@ from pathlib import Path
 
 from huggingface_hub import HfApi
 
-DEFAULT_REPO_ID = "makremlupin/pdf-summarizer-agent-dataset"
+DEFAULT_REPO_ID = "makremmakrem/pdf-summarizer-agent-dataset"
 
 
 class MissingHfTokenError(RuntimeError):
