@@ -9,6 +9,7 @@ as "free to train on".
 import json
 import os
 import sqlite3
+import time
 import urllib.error
 import urllib.request
 
@@ -20,6 +21,14 @@ FREE_MODELS = [
     "nvidia/nemotron-3.5-lightning:free",
 ]
 DAILY_FREE_REQUEST_LIMIT = 50
+# Transient provider-side errors happen (verified 2026-08-18: a real 400
+# "bad request" from the AtlasCloud backend on a chunk that succeeded
+# verbatim on retry seconds later) -- retry a couple of times before giving
+# up, rather than losing an entire multi-request hierarchical generation to
+# one flaky call. 429 (quota) is handled separately and never retried here.
+TRANSIENT_RETRY_STATUS_CODES = {400, 500, 502, 503, 504}
+MAX_TRANSIENT_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 3.0
 
 
 class QuotaExceededError(RuntimeError):
@@ -92,11 +101,21 @@ def call_teacher(
         },
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
-            payload = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        raise TeacherApiError(f"OpenRouter request failed: {e.code} {e.read().decode()}") from e
+    last_error = None
+    for attempt in range(MAX_TRANSIENT_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                payload = json.loads(resp.read())
+            break
+        except urllib.error.HTTPError as e:
+            body_text = e.read().decode()
+            last_error = TeacherApiError(f"OpenRouter request failed: {e.code} {body_text}")
+            if e.code == 429:
+                raise last_error from e  # quota errors are never transient
+            if e.code in TRANSIENT_RETRY_STATUS_CODES and attempt < MAX_TRANSIENT_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS)
+                continue
+            raise last_error from e
 
     db.record_teacher_request(conn, model)
     content = payload["choices"][0]["message"]["content"]
