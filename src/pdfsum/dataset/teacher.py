@@ -74,6 +74,7 @@ def call_teacher(
     model: str = FREE_MODELS[0],
     max_tokens: int = 2000,
     timeout: float = 120.0,
+    _already_fell_back: bool = False,
 ) -> str:
     _check_quota(conn)
     key = _api_key()
@@ -115,6 +116,19 @@ def call_teacher(
             if e.code in TRANSIENT_RETRY_STATUS_CODES and attempt < MAX_TRANSIENT_RETRIES:
                 time.sleep(RETRY_BACKOFF_SECONDS)
                 continue
+            if e.code in TRANSIENT_RETRY_STATUS_CODES and not _already_fell_back:
+                # Verified 2026-08-18: a 400 that failed 3/3 times against
+                # dots-studio (AtlasCloud backend) on a report-document chunk
+                # succeeded immediately on the *first* try against the other
+                # free model with identical content -- a provider-specific
+                # issue, not randomness. Worth one cross-model attempt before
+                # giving up entirely.
+                other_model = next((m for m in FREE_MODELS if m != model), None)
+                if other_model:
+                    return call_teacher(
+                        conn, prompt, model=other_model, max_tokens=max_tokens,
+                        timeout=timeout, _already_fell_back=True,
+                    )
             raise last_error from e
 
     db.record_teacher_request(conn, model)

@@ -92,6 +92,31 @@ def test_retries_transient_error_then_succeeds(conn, monkeypatch) -> None:
     assert db.count_teacher_requests_today_utc(conn) == 1  # only the success is recorded
 
 
+def test_falls_back_to_other_model_after_exhausting_retries(conn, monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("pdfsum.dataset.teacher.time.sleep", lambda s: None)
+
+    calls = []
+
+    def always_fails_first_model(request, *a, **k):
+        body = json.loads(request.data)
+        calls.append(body["model"])
+        if body["model"] == teacher.FREE_MODELS[0]:
+            raise _http_error(400)
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "pdfsum.dataset.teacher.urllib.request.urlopen", always_fails_first_model
+    )
+
+    result = teacher.call_teacher(conn, "summarize this", model=teacher.FREE_MODELS[0])
+    assert result == '{"summary": "recovered"}'
+    # 1 initial + MAX_TRANSIENT_RETRIES attempts against model[0], then 1 against model[1]
+    assert calls == [teacher.FREE_MODELS[0]] * (teacher.MAX_TRANSIENT_RETRIES + 1) + [
+        teacher.FREE_MODELS[1]
+    ]
+
+
 def test_429_never_retried(conn, monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     calls = {"n": 0}
