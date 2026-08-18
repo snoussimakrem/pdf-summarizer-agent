@@ -1,6 +1,6 @@
 import hashlib
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_DB_PATH = Path("data/registry.db")
@@ -14,13 +14,19 @@ CREATE TABLE IF NOT EXISTS documents (
     char_count INTEGER NOT NULL,
     ingested_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS teacher_api_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
 def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
-    conn.execute(SCHEMA)
+    conn.executescript(SCHEMA)
     conn.commit()
     return conn
 
@@ -49,3 +55,18 @@ def find_by_hash(conn: sqlite3.Connection, sha256: str) -> sqlite3.Row | None:
 def list_documents(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return conn.execute("SELECT * FROM documents ORDER BY id").fetchall()
+
+
+def count_teacher_requests_last_24h(conn: sqlite3.Connection) -> int:
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    return conn.execute(
+        "SELECT COUNT(*) FROM teacher_api_requests WHERE created_at > ?", (since,)
+    ).fetchone()[0]
+
+
+def record_teacher_request(conn: sqlite3.Connection, model: str) -> None:
+    conn.execute(
+        "INSERT INTO teacher_api_requests (model, created_at) VALUES (?, ?)",
+        (model, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()

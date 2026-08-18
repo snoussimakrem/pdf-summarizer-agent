@@ -1,0 +1,95 @@
+"""OpenRouter client for teacher-model calls during dataset generation.
+
+Both models below were license-verified 2026-08-18 (Apache 2.0 and
+OpenMDW-1.1 respectively — see project memory) to carry no restriction on
+using their outputs to train another model. Do not add a model here without
+checking its specific license page first — "free to call" is not the same
+as "free to train on".
+"""
+import json
+import os
+import sqlite3
+import urllib.error
+import urllib.request
+
+from pdfsum import db
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+FREE_MODELS = [
+    "dots-studio/dots-3-note-preview:free",
+    "nvidia/nemotron-3.5-lightning:free",
+]
+DAILY_FREE_REQUEST_LIMIT = 50
+
+
+class QuotaExceededError(RuntimeError):
+    pass
+
+
+class TeacherApiError(RuntimeError):
+    pass
+
+
+class MissingApiKeyError(RuntimeError):
+    pass
+
+
+def _api_key() -> str:
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        raise MissingApiKeyError(
+            "OPENROUTER_API_KEY is not set. MANUAL_ACTION_REQUIRED: create a free "
+            "OpenRouter account at https://openrouter.ai, generate an API key, and "
+            "export it as OPENROUTER_API_KEY before running dataset generation."
+        )
+    return key
+
+
+def _check_quota(conn: sqlite3.Connection) -> None:
+    used = db.count_teacher_requests_last_24h(conn)
+    if used >= DAILY_FREE_REQUEST_LIMIT:
+        raise QuotaExceededError(
+            f"OpenRouter free-tier daily quota ({DAILY_FREE_REQUEST_LIMIT} req/day, "
+            "shared across ALL free models) is exhausted for the last 24h "
+            f"({used} requests recorded). Wait for it to reset, or stop here — "
+            "buying the $10 credit unlock (1000/day) is a paid deviation that "
+            "must be explicitly flagged and confirmed before use."
+        )
+
+
+def call_teacher(
+    conn: sqlite3.Connection,
+    prompt: str,
+    model: str = FREE_MODELS[0],
+    max_tokens: int = 2000,
+    timeout: float = 120.0,
+) -> str:
+    _check_quota(conn)
+    key = _api_key()
+
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        }
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        OPENROUTER_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise TeacherApiError(f"OpenRouter request failed: {e.code} {e.read().decode()}") from e
+
+    db.record_teacher_request(conn, model)
+    return payload["choices"][0]["message"]["content"]

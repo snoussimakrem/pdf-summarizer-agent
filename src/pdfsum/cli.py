@@ -3,7 +3,16 @@ import sys
 from pathlib import Path
 
 from pdfsum import db
+from pdfsum.dataset import generate, teacher
+from pdfsum.dataset.sources import fetch_arxiv_papers, fetch_gutenberg_books, fetch_sec_contracts, fetch_sec_reports
 from pdfsum.extract import extract_text
+
+DOMAIN_FETCHERS = {
+    "paper": fetch_arxiv_papers,
+    "contract": fetch_sec_contracts,
+    "report": fetch_sec_reports,
+    "generic": fetch_gutenberg_books,
+}
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -47,6 +56,28 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_generate_dataset(args: argparse.Namespace) -> int:
+    conn = db.connect(Path(args.db_path))
+    fetcher = DOMAIN_FETCHERS[args.domain]
+    print(f"fetching {args.count} '{args.domain}' source document(s)...")
+    sources = fetcher(max_results=args.count)
+
+    remaining_quota = teacher.DAILY_FREE_REQUEST_LIMIT - db.count_teacher_requests_last_24h(conn)
+    print(f"OpenRouter free-tier requests remaining in last 24h: {remaining_quota}")
+
+    for source in sources:
+        print(f"generating example for {source.source_id} ({source.title[:60]})...")
+        try:
+            example = generate.generate_example(conn, source, model=args.model)
+        except (teacher.QuotaExceededError, teacher.MissingApiKeyError) as e:
+            print(f"stopped: {e}", file=sys.stderr)
+            return 1
+        generate.append_example(example)
+        print(f"  -> wrote example ({example['generation_method']}, "
+              f"{len(example['teacher_output_raw'])} chars teacher output)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pdfsum")
     parser.add_argument(
@@ -60,6 +91,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_parser = subparsers.add_parser("list", help="list ingested documents")
     list_parser.set_defaults(func=cmd_list)
+
+    gen_parser = subparsers.add_parser(
+        "generate-dataset", help="fetch source PDFs and generate training examples via a teacher model"
+    )
+    gen_parser.add_argument("domain", choices=list(DOMAIN_FETCHERS))
+    gen_parser.add_argument("--count", type=int, default=1)
+    gen_parser.add_argument("--model", default=teacher.FREE_MODELS[0], choices=teacher.FREE_MODELS)
+    gen_parser.set_defaults(func=cmd_generate_dataset)
 
     return parser
 
