@@ -62,8 +62,8 @@ def cmd_generate_dataset(args: argparse.Namespace) -> int:
     print(f"fetching {args.count} '{args.domain}' source document(s)...")
     sources = fetcher(max_results=args.count)
 
-    remaining_quota = teacher.DAILY_FREE_REQUEST_LIMIT - db.count_teacher_requests_last_24h(conn)
-    print(f"OpenRouter free-tier requests remaining in last 24h: {remaining_quota}")
+    remaining_quota = teacher.DAILY_FREE_REQUEST_LIMIT - db.count_teacher_requests_today_utc(conn)
+    print(f"OpenRouter free-tier requests remaining today (UTC): {remaining_quota}")
 
     for source in sources:
         print(f"generating example for {source.source_id} ({source.title[:60]})...")

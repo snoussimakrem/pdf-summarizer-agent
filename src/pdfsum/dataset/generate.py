@@ -15,9 +15,35 @@ from pdfsum.extract import extract_text_from_bytes
 DEFAULT_OUTPUT_PATH = Path("data/dataset/examples.jsonl")
 
 
+MAX_LENGTH_RETRIES = 1
+
+
+def _generate_with_length_retry(
+    conn: Connection, source_text: str, domain: str, model: str
+) -> tuple[str, bool]:
+    """Returns (raw_output, length_compliant). Retries once with explicit
+    word-count feedback if the teacher missed the target length — training on
+    non-compliant examples would teach the student model the wrong lesson
+    about the length-control requirement. `source_text` is either the
+    document itself (single-pass) or combined chunk-summaries (hierarchical)."""
+    prompt = schemas.build_teacher_prompt(domain, source_text)
+    raw_output = teacher.call_teacher(conn, prompt, model=model)
+
+    for _ in range(MAX_LENGTH_RETRIES):
+        if schemas.is_length_compliant(raw_output):
+            return raw_output, True
+        word_count = schemas.summary_word_count(raw_output)
+        if word_count is None:
+            break  # not recoverable via a length-retry (invalid JSON)
+        retry_prompt = schemas.build_retry_prompt(domain, source_text, word_count)
+        raw_output = teacher.call_teacher(conn, retry_prompt, model=model)
+
+    return raw_output, schemas.is_length_compliant(raw_output)
+
+
 def _synthesize_from_chunks(
     conn: Connection, document_text: str, domain: str, model: str
-) -> str:
+) -> tuple[str, bool]:
     chunks = chunking.chunk_text(document_text)
     chunk_summaries = []
     for i, chunk in enumerate(chunks):
@@ -27,8 +53,7 @@ def _synthesize_from_chunks(
     combined = "\n\n".join(
         f"[excerpt {i + 1}]\n{s}" for i, s in enumerate(chunk_summaries)
     )
-    final_prompt = schemas.build_teacher_prompt(domain, combined)
-    return teacher.call_teacher(conn, final_prompt, model=model)
+    return _generate_with_length_retry(conn, combined, domain, model)
 
 
 def generate_example(
@@ -40,11 +65,14 @@ def generate_example(
     document_text = extracted.text
 
     if chunking.is_long_document(document_text):
-        raw_output = _synthesize_from_chunks(conn, document_text, source.domain, model)
+        raw_output, length_compliant = _synthesize_from_chunks(
+            conn, document_text, source.domain, model
+        )
         generation_method = "hierarchical"
     else:
-        prompt = schemas.build_teacher_prompt(source.domain, document_text)
-        raw_output = teacher.call_teacher(conn, prompt, model=model)
+        raw_output, length_compliant = _generate_with_length_retry(
+            conn, document_text, source.domain, model
+        )
         generation_method = "single_pass"
 
     return {
@@ -58,6 +86,7 @@ def generate_example(
         "teacher_model": model,
         "generation_method": generation_method,
         "teacher_output_raw": raw_output,
+        "length_compliant": length_compliant,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

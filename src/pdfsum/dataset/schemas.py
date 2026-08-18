@@ -45,6 +45,33 @@ def render_schema(domain: str) -> str:
     return rendered.replace("{}-{}", f"{lo}-{hi}")
 
 
+def summary_word_count(teacher_output_raw: str) -> int | None:
+    """Returns the word count of the "summary" field, or None if the output
+    isn't valid JSON / has no summary field."""
+    try:
+        parsed = json.loads(teacher_output_raw)
+        return len(parsed["summary"].split())
+    except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
+        return None
+
+
+def is_length_compliant(teacher_output_raw: str) -> bool:
+    lo, hi = SUMMARY_TARGET_WORDS
+    count = summary_word_count(teacher_output_raw)
+    return count is not None and lo <= count <= hi
+
+
+def build_retry_prompt(domain: str, document_text: str, previous_word_count: int) -> str:
+    lo, hi = SUMMARY_TARGET_WORDS
+    base_prompt = build_teacher_prompt(domain, document_text)
+    return (
+        f"Your previous attempt's \"summary\" field was {previous_word_count} words — "
+        f"outside the required {lo}-{hi} word range. Try again, and this time count "
+        f"the words in your summary before finishing to make sure it's within range.\n\n"
+        + base_prompt
+    )
+
+
 def build_teacher_prompt(domain: str, document_text: str) -> str:
     lo, hi = SUMMARY_TARGET_WORDS
     schema_str = render_schema(domain)

@@ -1,6 +1,6 @@
 import hashlib
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_DB_PATH = Path("data/registry.db")
@@ -57,10 +57,15 @@ def list_documents(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM documents ORDER BY id").fetchall()
 
 
-def count_teacher_requests_last_24h(conn: sqlite3.Connection) -> int:
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+def count_teacher_requests_today_utc(conn: sqlite3.Connection) -> int:
+    """OpenRouter's free-tier quota resets at UTC midnight (calendar day),
+    not on a rolling 24h window from each request — verified 2026-08-18 by
+    hitting the real 429 and reading its X-RateLimit-Reset header."""
+    midnight_utc = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
     return conn.execute(
-        "SELECT COUNT(*) FROM teacher_api_requests WHERE created_at > ?", (since,)
+        "SELECT COUNT(*) FROM teacher_api_requests WHERE created_at > ?", (midnight_utc,)
     ).fetchone()[0]
 
 

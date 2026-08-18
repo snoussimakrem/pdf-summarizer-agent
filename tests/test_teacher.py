@@ -48,4 +48,4 @@ def test_successful_call_records_request(conn, monkeypatch) -> None:
 
     result = teacher.call_teacher(conn, "summarize this")
     assert result == '{"summary": "ok"}'
-    assert db.count_teacher_requests_last_24h(conn) == 1
+    assert db.count_teacher_requests_today_utc(conn) == 1

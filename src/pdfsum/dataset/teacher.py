@@ -46,12 +46,14 @@ def _api_key() -> str:
 
 
 def _check_quota(conn: sqlite3.Connection) -> None:
-    used = db.count_teacher_requests_last_24h(conn)
+    used = db.count_teacher_requests_today_utc(conn)
     if used >= DAILY_FREE_REQUEST_LIMIT:
         raise QuotaExceededError(
             f"OpenRouter free-tier daily quota ({DAILY_FREE_REQUEST_LIMIT} req/day, "
-            "shared across ALL free models) is exhausted for the last 24h "
-            f"({used} requests recorded). Wait for it to reset, or stop here — "
+            "shared across ALL free models) is exhausted for today (UTC) "
+            f"({used} requests recorded by us — the account-wide total, including "
+            "any usage outside this tool, may be higher). Wait for the UTC-midnight "
+            "reset, or stop here — "
             "buying the $10 credit unlock (1000/day) is a paid deviation that "
             "must be explicitly flagged and confirmed before use."
         )
@@ -72,6 +74,11 @@ def call_teacher(
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
+            # Both free teacher models default to emitting hidden chain-of-thought
+            # reasoning tokens before content, which can consume the whole
+            # max_tokens budget and leave "content": null (verified 2026-08-18).
+            # Disabling it is confirmed to work cleanly for both models.
+            "reasoning": {"enabled": False},
         }
     ).encode("utf-8")
 
@@ -92,4 +99,12 @@ def call_teacher(
         raise TeacherApiError(f"OpenRouter request failed: {e.code} {e.read().decode()}") from e
 
     db.record_teacher_request(conn, model)
-    return payload["choices"][0]["message"]["content"]
+    content = payload["choices"][0]["message"]["content"]
+    if content is None:
+        finish_reason = payload["choices"][0].get("finish_reason")
+        raise TeacherApiError(
+            f"teacher model returned no content (finish_reason={finish_reason}); "
+            "likely truncated by max_tokens — this request was still counted "
+            "against the daily quota"
+        )
+    return content

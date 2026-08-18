@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -33,11 +34,14 @@ def test_short_document_uses_single_pass(conn, tmp_path, monkeypatch) -> None:
         pdf_bytes=pdf_bytes,
     )
 
+    compliant_summary = " ".join(["word"] * 140)  # within the 100-180 target range
     calls = []
 
     def fake_call_teacher(conn_, prompt, model=None, **kwargs):
         calls.append(prompt)
-        return '{"document_type": "generic", "summary": "ok", "key_points": []}'
+        return json.dumps(
+            {"document_type": "generic", "summary": compliant_summary, "key_points": []}
+        )
 
     monkeypatch.setattr("pdfsum.dataset.generate.teacher.call_teacher", fake_call_teacher)
 
@@ -45,7 +49,8 @@ def test_short_document_uses_single_pass(conn, tmp_path, monkeypatch) -> None:
 
     assert example["generation_method"] == "single_pass"
     assert example["domain"] == "generic"
-    assert len(calls) == 1
+    assert example["length_compliant"] is True
+    assert len(calls) == 1  # compliant on the first try, no retry needed
     assert "A short generic document." in example["document_text"]
 
 
